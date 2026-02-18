@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "iCloud Garage Automation",
+        "description": "Set up automatic garage door control based on iCloud device location.\n\nDefault device names: **{my_default}** (yours) and **{wife_default}** (wife's).",
+        "data": {
+          "my_device_tracker": "Your iPhone (device_tracker entity)",
+          "wife_device_tracker": "Wife's iPhone (device_tracker entity)",
+          "garage_door_entity": "Garage door (cover entity)",
+          "motion_sensor_entity": "Driveway / garage motion sensor",
+          "notification_target": "Notify service for alerts (e.g. notify.mobile_app_rpip)",
+          "home_zone": "Home zone entity (default: zone.home)",
+          "avg_speed_kph": "Assumed average driving speed (km/h)"
+        },
+        "data_description": {
+          "notification_target": "Full Home Assistant notify service name, e.g. notify.mobile_app_rpip",
+          "avg_speed_kph": "Used to calculate how often to poll location when you are far from home (poll every 4/5 of estimated drive time)"
+        }
+      }
+    },
+    "error": {
+      "required": "This field is required."
+    },
+    "abort": {
+      "already_configured": "iCloud Garage Automation is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "iCloud Garage Automation — Options",
+        "data": {
+          "my_device_tracker": "Your iPhone (device_tracker entity)",
+          "wife_device_tracker": "Wife's iPhone (device_tracker entity)",
+          "garage_door_entity": "Garage door (cover entity)",
+          "motion_sensor_entity": "Driveway / garage motion sensor",
+          "notification_target": "Notify service for alerts",
+          "home_zone": "Home zone entity",
+          "avg_speed_kph": "Assumed average driving speed (km/h)"
+        }
+      }
+    }
+  }
+}

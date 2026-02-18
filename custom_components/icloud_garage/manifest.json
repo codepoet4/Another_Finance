@@ -1,0 +1,13 @@
+{
+  "domain": "icloud_garage",
+  "name": "iCloud Garage Automation",
+  "version": "1.0.0",
+  "documentation": "https://github.com/codepoet4/Another_Finance",
+  "issue_tracker": "https://github.com/codepoet4/Another_Finance/issues",
+  "codeowners": ["@codepoet4"],
+  "iot_class": "cloud_polling",
+  "config_flow": true,
+  "dependencies": [],
+  "requirements": [],
+  "homeassistant": "2023.1.0"
+}
