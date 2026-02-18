@@ -37,12 +37,15 @@ from .const import (
     CONF_HOME_ZONE,
     CONF_MOTION_SENSOR,
     CONF_MY_DEVICE,
+    CONF_MY_NOTIFY,
     CONF_NOTIFICATION_TARGET,
     CONF_WIFE_DEVICE,
+    CONF_WIFE_NOTIFY,
     DEFAULT_AVG_SPEED_KPH,
     DEFAULT_HOME_ZONE,
     DRIVING_SPEED_THRESHOLD_KPH,
     GARAGE_COOLDOWN_S,
+    LOCATION_UPDATE_WAIT_S,
     MAX_POLL_INTERVAL_S,
     MIN_POLL_INTERVAL_S,
     MOTION_AFTER_S,
@@ -65,6 +68,16 @@ _MOTION_ACTIVE_STATES = {"on", "detected", "motion", "active"}
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _derive_notify_service(device_entity: str) -> str:
+    """
+    Derive the Companion App notify service name from a device_tracker entity ID.
+
+    Example: device_tracker.rpip  →  notify.mobile_app_rpip
+    """
+    name = device_entity.split(".", 1)[-1]
+    return f"notify.mobile_app_{name}"
+
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Return the great-circle distance in metres between two GPS points."""
@@ -98,11 +111,18 @@ class PersonTracker:
         label: str,
         device_entity: str,
         coordinator: "GarageCoordinator",
+        notify_service: Optional[str] = None,
     ) -> None:
         self.hass = hass
         self.label = label                    # human-readable: "me" or "wife"
         self.device_entity = device_entity    # e.g. device_tracker.rpip
         self.coordinator = coordinator
+
+        # Notify service used to send request_location_update to this phone.
+        # Falls back to the auto-derived name if not explicitly provided.
+        self._location_notify_service: str = (
+            notify_service or _derive_notify_service(device_entity)
+        )
 
         self.state: str = STATE_HOME
 
@@ -193,13 +213,48 @@ class PersonTracker:
         self._cancel_poll = async_call_later(self.hass, delay_s, _fire)
 
     # ------------------------------------------------------------------
-    # Main poll
+    # Main poll — two-phase: request then read
     # ------------------------------------------------------------------
 
     async def _poll(self) -> None:
         """
-        Fetch current GPS position, update driving state, check proximity,
-        and schedule the next poll at the right adaptive interval.
+        Phase 1 — send `request_location_update` to the iPhone via its
+        Companion App notify service, then schedule _read_location() after
+        LOCATION_UPDATE_WAIT_S seconds to evaluate the refreshed position.
+        """
+        if self.state == STATE_HOME or self._waiting_for_motion:
+            return
+
+        notify_svc = self._location_notify_service.replace("notify.", "", 1)
+        _LOGGER.debug(
+            "[%s] requesting location update via %s", self.label, self._location_notify_service
+        )
+        try:
+            await self.hass.services.async_call(
+                "notify",
+                notify_svc,
+                {"message": "request_location_update"},
+                blocking=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # If the service doesn't exist yet (phone offline, etc.) just
+            # continue — we will still read whatever state is available.
+            _LOGGER.debug(
+                "[%s] request_location_update call failed (%s) — will read cached state",
+                self.label, exc,
+            )
+
+        # Schedule location read after the phone has had time to respond.
+        @callback
+        def _do_read(_now):
+            self.hass.async_create_task(self._read_location())
+
+        async_call_later(self.hass, LOCATION_UPDATE_WAIT_S, _do_read)
+
+    async def _read_location(self) -> None:
+        """
+        Phase 2 — read the (now-fresh) device_tracker state, update the
+        driving state machine, check proximity, and schedule the next poll.
         """
         if self.state == STATE_HOME or self._waiting_for_motion:
             return
@@ -216,7 +271,7 @@ class PersonTracker:
         accuracy: float = float(attrs.get("gps_accuracy", 9999))
 
         if lat is None or lon is None:
-            _LOGGER.debug("[%s] no GPS coordinates yet", self.label)
+            _LOGGER.debug("[%s] no GPS coordinates in response", self.label)
             self._schedule_poll(MIN_POLL_INTERVAL_S)
             return
 
@@ -252,9 +307,9 @@ class PersonTracker:
                 await self._on_proximity_confirmed(now)
                 return
             else:
-                # Within 20 m but fix is poor — poll fast to get better accuracy
+                # Within 20 m but fix is poor — request better fix immediately
                 _LOGGER.debug(
-                    "[%s] within 20 m but accuracy %.1f m > %d m — waiting for better fix",
+                    "[%s] within 20 m but accuracy %.1f m > %d m — requesting better fix",
                     self.label, accuracy, ACCURACY_REQUIRED_M,
                 )
                 self._schedule_poll(MIN_POLL_INTERVAL_S)
@@ -405,12 +460,16 @@ class GarageCoordinator:
             self.home_lat, self.home_lon, self._home_zone,
         )
 
-        # Instantiate per-person trackers
+        # Instantiate per-person trackers.
+        # notify_service is used to send request_location_update; falls back to
+        # auto-derived notify.mobile_app_<device_name> if not explicitly set.
         self._trackers["me"] = PersonTracker(
-            self.hass, "me", self._my_device, self
+            self.hass, "me", self._my_device, self,
+            notify_service=self._config.get(CONF_MY_NOTIFY),
         )
         self._trackers["wife"] = PersonTracker(
-            self.hass, "wife", self._wife_device, self
+            self.hass, "wife", self._wife_device, self,
+            notify_service=self._config.get(CONF_WIFE_NOTIFY),
         )
 
         # ── HA event subscriptions ──────────────────────────────────────

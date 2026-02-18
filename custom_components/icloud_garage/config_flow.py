@@ -12,8 +12,10 @@ from .const import (
     CONF_HOME_ZONE,
     CONF_MOTION_SENSOR,
     CONF_MY_DEVICE,
+    CONF_MY_NOTIFY,
     CONF_NOTIFICATION_TARGET,
     CONF_WIFE_DEVICE,
+    CONF_WIFE_NOTIFY,
     DEFAULT_AVG_SPEED_KPH,
     DEFAULT_HOME_ZONE,
     DOMAIN,
@@ -77,8 +79,21 @@ class ICloudGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         domain=["binary_sensor", "sensor"]
                     )
                 ),
-                # Full notify service name, e.g. notify.mobile_app_rpip
+                # Alert notify service (your iPhone only), e.g. notify.mobile_app_rpip
                 vol.Required(CONF_NOTIFICATION_TARGET): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT
+                    )
+                ),
+                # Per-phone location-request notify services.
+                # Leave blank to auto-derive from device_tracker name:
+                #   device_tracker.rpip  →  notify.mobile_app_rpip
+                vol.Optional(CONF_MY_NOTIFY): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT
+                    )
+                ),
+                vol.Optional(CONF_WIFE_NOTIFY): selector.TextSelector(
                     selector.TextSelectorConfig(
                         type=selector.TextSelectorType.TEXT
                     )
@@ -168,6 +183,22 @@ class ICloudGarageOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     CONF_NOTIFICATION_TARGET,
                     default=current.get(CONF_NOTIFICATION_TARGET, ""),
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT
+                    )
+                ),
+                vol.Optional(
+                    CONF_MY_NOTIFY,
+                    default=current.get(CONF_MY_NOTIFY, ""),
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(
+                        type=selector.TextSelectorType.TEXT
+                    )
+                ),
+                vol.Optional(
+                    CONF_WIFE_NOTIFY,
+                    default=current.get(CONF_WIFE_NOTIFY, ""),
                 ): selector.TextSelector(
                     selector.TextSelectorConfig(
                         type=selector.TextSelectorType.TEXT
