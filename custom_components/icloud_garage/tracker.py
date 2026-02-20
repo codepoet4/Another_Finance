@@ -164,9 +164,10 @@ class PersonTracker:
             _LOGGER.info("[%s] starting in STATE_HOME — polling suspended until zone exit", self.label)
         else:
             self.state = STATE_AWAY
-            _LOGGER.info(
-                "[%s] starting in STATE_AWAY — scheduling first poll in %ds",
-                self.label, MIN_POLL_INTERVAL_S,
+            _LOGGER.warning(
+                "[%s] *** TRACKING STARTED — integration startup with device away "
+                "(entity state='%s') ***  first location request in %ds",
+                self.label, raw_state, MIN_POLL_INTERVAL_S,
             )
             self._schedule_poll(MIN_POLL_INTERVAL_S, reason="startup (away from home)")
 
@@ -198,8 +199,9 @@ class PersonTracker:
                 self.label, self.state,
             )
             return
-        _LOGGER.info(
-            "[%s] LEFT home zone — state HOME→AWAY, scheduling first poll in %ds",
+        _LOGGER.warning(
+            "[%s] *** TRACKING STARTED — left home zone (HOME→AWAY) ***  "
+            "first location request in %ds",
             self.label, MIN_POLL_INTERVAL_S,
         )
         self.state = STATE_AWAY
@@ -372,18 +374,6 @@ class PersonTracker:
                 self.label, self.device_entity, MIN_POLL_INTERVAL_S,
             )
             self._schedule_poll(MIN_POLL_INTERVAL_S, reason="entity not found, retry")
-            return
-
-        # If HA's zone detection says we're home, stop polling regardless of
-        # self.state — handles the case where zone_entered was never fired after
-        # a GPS glitch (iCloud coarse zone detection can miss the re-entry event).
-        if entity_state.state.lower() == "home":
-            _LOGGER.info(
-                "[%s] _read_location: entity state is 'home' — stopping poll cycle "
-                "(zone_entered event may have been missed)",
-                self.label,
-            )
-            self.state = STATE_HOME
             return
 
         attrs = entity_state.attributes
