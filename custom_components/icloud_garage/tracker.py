@@ -168,7 +168,7 @@ class PersonTracker:
                 "[%s] starting in STATE_AWAY — scheduling first poll in %ds",
                 self.label, MIN_POLL_INTERVAL_S,
             )
-            self._schedule_poll(MIN_POLL_INTERVAL_S)
+            self._schedule_poll(MIN_POLL_INTERVAL_S, reason="startup (away from home)")
 
     def stop(self) -> None:
         """Cancel any pending callbacks."""
@@ -207,7 +207,7 @@ class PersonTracker:
         self._prev_lat = None
         self._prev_lon = None
         self._prev_poll_time = None
-        self._schedule_poll(MIN_POLL_INTERVAL_S)
+        self._schedule_poll(MIN_POLL_INTERVAL_S, reason="zone left")
 
     def on_zone_entered(self) -> None:
         """Person entered the home zone — suspend tracking."""
@@ -228,10 +228,17 @@ class PersonTracker:
     # Poll scheduling
     # ------------------------------------------------------------------
 
-    def _schedule_poll(self, delay_s: float, *, min_s: float = MIN_POLL_INTERVAL_S) -> None:
+    def _schedule_poll(
+        self,
+        delay_s: float,
+        *,
+        min_s: float = MIN_POLL_INTERVAL_S,
+        reason: str = "scheduled",
+    ) -> None:
         """Schedule _poll() after *delay_s* seconds (clamped to bounds).
 
         Pass ``min_s`` to override the lower bound (e.g. near-home rapid polling).
+        Pass ``reason`` to label why this poll was requested (shown in send log).
         """
         if self._cancel_poll:
             self._cancel_poll()
@@ -250,7 +257,7 @@ class PersonTracker:
         @callback
         def _fire(_now):
             self._cancel_poll = None
-            self.hass.async_create_task(self._poll())
+            self.hass.async_create_task(self._poll(reason=reason))
 
         self._cancel_poll = async_call_later(self.hass, delay_s, _fire)
 
@@ -258,7 +265,7 @@ class PersonTracker:
     # Main poll — two-phase: request then read
     # ------------------------------------------------------------------
 
-    async def _poll(self) -> None:
+    async def _poll(self, reason: str = "scheduled") -> None:
         """
         Phase 1 — send `request_location_update` to the iPhone via its
         Companion App notify service, then schedule _read_location() after
@@ -274,8 +281,8 @@ class PersonTracker:
         notify_svc = self._location_notify_service.replace("notify.", "", 1)
         _LOGGER.warning(
             "[%s] sending request_location_update → %s  "
-            "(will read on update; fallback in %ds)",
-            self.label, self._location_notify_service, LOCATION_UPDATE_WAIT_S,
+            "(reason: %s; will read on update; fallback in %ds)",
+            self.label, self._location_notify_service, reason, LOCATION_UPDATE_WAIT_S,
         )
         try:
             await self.hass.services.async_call(
@@ -364,7 +371,7 @@ class PersonTracker:
                 "[%s] entity '%s' not found in HA — retrying in %ds",
                 self.label, self.device_entity, MIN_POLL_INTERVAL_S,
             )
-            self._schedule_poll(MIN_POLL_INTERVAL_S)
+            self._schedule_poll(MIN_POLL_INTERVAL_S, reason="entity not found, retry")
             return
 
         attrs = entity_state.attributes
@@ -378,7 +385,7 @@ class PersonTracker:
                 "(zone state='%s') — retrying in %ds",
                 self.label, entity_state.state, MIN_POLL_INTERVAL_S,
             )
-            self._schedule_poll(MIN_POLL_INTERVAL_S)
+            self._schedule_poll(MIN_POLL_INTERVAL_S, reason="no coordinates, retry")
             return
 
         home_lat = self.coordinator.home_lat
@@ -449,7 +456,7 @@ class PersonTracker:
                         self.label, distance_m, accuracy,
                         ACCURACY_REQUIRED_M, MIN_POLL_INTERVAL_S,
                     )
-                    self._schedule_poll(MIN_POLL_INTERVAL_S)
+                    self._schedule_poll(MIN_POLL_INTERVAL_S, reason="poor GPS accuracy, retry")
                     return
             else:
                 _LOGGER.info(
@@ -473,7 +480,7 @@ class PersonTracker:
                 self.label, NEAR_HOME_PROXIMITY_M,
                 prev_distance_m, distance_m, NEAR_HOME_POLL_INTERVAL_S,
             )
-            self._schedule_poll(NEAR_HOME_POLL_INTERVAL_S, min_s=NEAR_HOME_POLL_INTERVAL_S)
+            self._schedule_poll(NEAR_HOME_POLL_INTERVAL_S, min_s=NEAR_HOME_POLL_INTERVAL_S, reason="near home approach")
             return
 
         # ── Adaptive next-poll interval ────────────────────────────────
@@ -493,7 +500,7 @@ class PersonTracker:
                 self.label, MAX_POLL_INTERVAL_S,
             )
 
-        self._schedule_poll(interval_s)
+        self._schedule_poll(interval_s, reason="adaptive interval")
 
     # ------------------------------------------------------------------
     # Proximity confirmed → motion correlation
