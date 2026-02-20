@@ -430,7 +430,7 @@ class PersonTracker:
         distance_m = _haversine_m(lat, lon, home_lat, home_lon)
         now = utcnow()
 
-        _LOGGER.info(
+        _LOGGER.warning(
             "[%s] location read — state=%s  entity_zone='%s'  dist=%.1f m  "
             "accuracy=%.1f m  pos=(%.6f, %.6f)",
             self.label, self.state, entity_state.state, distance_m, accuracy, lat, lon,
@@ -442,24 +442,24 @@ class PersonTracker:
             if elapsed_s > 0:
                 moved_m = _haversine_m(lat, lon, self._prev_lat, self._prev_lon)
                 speed_kph = (moved_m / elapsed_s) * 3.6
-                _LOGGER.info(
+                _LOGGER.warning(
                     "[%s] movement since last read: %.1f m in %.0f s = %.1f kph  "
                     "(threshold %.1f kph)",
                     self.label, moved_m, elapsed_s, speed_kph, DRIVING_SPEED_THRESHOLD_KPH,
                 )
                 if speed_kph >= DRIVING_SPEED_THRESHOLD_KPH and self.state == STATE_AWAY:
-                    _LOGGER.info(
+                    _LOGGER.warning(
                         "[%s] DRIVING confirmed (%.1f kph ≥ %.1f kph) — state AWAY→DRIVING",
                         self.label, speed_kph, DRIVING_SPEED_THRESHOLD_KPH,
                     )
                     self.state = STATE_DRIVING
                 elif self.state == STATE_AWAY:
-                    _LOGGER.info(
+                    _LOGGER.warning(
                         "[%s] speed %.1f kph below threshold — still STATE_AWAY (not driving)",
                         self.label, speed_kph,
                     )
         else:
-            _LOGGER.info(
+            _LOGGER.warning(
                 "[%s] no previous position recorded — skipping speed check this cycle",
                 self.label,
             )
@@ -479,7 +479,7 @@ class PersonTracker:
         if self.state == STATE_DRIVING:
             if distance_m <= ARRIVAL_PROXIMITY_M:
                 if accuracy <= ACCURACY_REQUIRED_M:
-                    _LOGGER.info(
+                    _LOGGER.warning(
                         "[%s] PROXIMITY HIT — %.1f m from home, accuracy %.1f m — "
                         "entering motion correlation",
                         self.label, distance_m, accuracy,
@@ -487,21 +487,21 @@ class PersonTracker:
                     await self._on_proximity_confirmed(now)
                     return
                 else:
-                    _LOGGER.info(
-                        "[%s] within %.1f m of home but GPS accuracy is %.1f m "
-                        "(need ≤%d m) — requesting better fix in %ds",
+                    _LOGGER.warning(
+                        "[%s] within %.1f m of home but GPS accuracy %.1f m "
+                        "exceeds limit (need ≤%d m) — requesting better fix in %ds",
                         self.label, distance_m, accuracy,
                         ACCURACY_REQUIRED_M, MIN_POLL_INTERVAL_S,
                     )
                     self._schedule_poll(MIN_POLL_INTERVAL_S, reason="poor GPS accuracy, retry")
                     return
             else:
-                _LOGGER.info(
+                _LOGGER.warning(
                     "[%s] driving — %.1f m from home (trigger at %d m)",
                     self.label, distance_m, ARRIVAL_PROXIMITY_M,
                 )
         elif self.state == STATE_AWAY:
-            _LOGGER.info(
+            _LOGGER.warning(
                 "[%s] away (not yet driving) — %.1f m from home",
                 self.label, distance_m,
             )
