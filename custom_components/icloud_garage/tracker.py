@@ -139,6 +139,10 @@ class PersonTracker:
         self._waiting_for_motion: bool = False
         self._cancel_motion_wait: Optional[Callable] = None
 
+        # Location-update watch: one-shot subscription + fallback timeout
+        self._cancel_location_watch: Optional[Callable] = None
+        self._cancel_location_timeout: Optional[Callable] = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -173,6 +177,12 @@ class PersonTracker:
         if self._cancel_motion_wait:
             self._cancel_motion_wait()
             self._cancel_motion_wait = None
+        if self._cancel_location_watch:
+            self._cancel_location_watch()
+            self._cancel_location_watch = None
+        if self._cancel_location_timeout:
+            self._cancel_location_timeout()
+            self._cancel_location_timeout = None
 
     # ------------------------------------------------------------------
     # Zone events (called by GarageCoordinator)
@@ -258,7 +268,8 @@ class PersonTracker:
 
         notify_svc = self._location_notify_service.replace("notify.", "", 1)
         _LOGGER.info(
-            "[%s] sending request_location_update → %s  (will read in %ds)",
+            "[%s] sending request_location_update → %s  "
+            "(will read on update; fallback in %ds)",
             self.label, self._location_notify_service, LOCATION_UPDATE_WAIT_S,
         )
         try:
@@ -278,12 +289,54 @@ class PersonTracker:
                 self.label, exc,
             )
 
-        # Schedule location read after the phone has had time to respond.
+        # Cancel any existing watch/timeout from a previous poll that hasn't
+        # fired yet (e.g. two rapid polls scheduled back-to-back).
+        if self._cancel_location_watch:
+            self._cancel_location_watch()
+            self._cancel_location_watch = None
+        if self._cancel_location_timeout:
+            self._cancel_location_timeout()
+            self._cancel_location_timeout = None
+
+        # Subscribe to the device_tracker entity so _read_location() fires the
+        # moment the phone pushes a fresh position back to HA.
         @callback
-        def _do_read(_now):
+        def _on_location_update(_event) -> None:
+            """Called as soon as the device_tracker receives a new state."""
+            # Unsubscribe (one-shot) and cancel the fallback timeout.
+            unsub = self._cancel_location_watch
+            self._cancel_location_watch = None
+            if unsub:
+                unsub()
+            if self._cancel_location_timeout:
+                self._cancel_location_timeout()
+                self._cancel_location_timeout = None
+            _LOGGER.info("[%s] device_tracker updated — reading location immediately", self.label)
             self.hass.async_create_task(self._read_location())
 
-        async_call_later(self.hass, LOCATION_UPDATE_WAIT_S, _do_read)
+        self._cancel_location_watch = async_track_state_change_event(
+            self.hass,
+            [self.device_entity],
+            _on_location_update,
+        )
+
+        # Fallback: if the phone doesn't respond within LOCATION_UPDATE_WAIT_S,
+        # read whatever cached state is available.
+        @callback
+        def _on_timeout(_now) -> None:
+            if self._cancel_location_watch:
+                self._cancel_location_watch()
+                self._cancel_location_watch = None
+            self._cancel_location_timeout = None
+            _LOGGER.warning(
+                "[%s] no location update received within %ds — reading cached state",
+                self.label, LOCATION_UPDATE_WAIT_S,
+            )
+            self.hass.async_create_task(self._read_location())
+
+        self._cancel_location_timeout = async_call_later(
+            self.hass, LOCATION_UPDATE_WAIT_S, _on_timeout,
+        )
 
     async def _read_location(self) -> None:
         """
