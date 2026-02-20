@@ -272,7 +272,7 @@ class PersonTracker:
             return
 
         notify_svc = self._location_notify_service.replace("notify.", "", 1)
-        _LOGGER.info(
+        _LOGGER.warning(
             "[%s] sending request_location_update → %s  "
             "(will read on update; fallback in %ds)",
             self.label, self._location_notify_service, LOCATION_UPDATE_WAIT_S,
@@ -284,7 +284,8 @@ class PersonTracker:
                 {"message": "request_location_update"},
                 blocking=False,
             )
-            _LOGGER.info("[%s] request_location_update sent OK", self.label)
+            _LOGGER.info("[%s] request_location_update sent OK — watching %s for state change",
+                         self.label, self.device_entity)
         except Exception as exc:  # noqa: BLE001
             # If the service doesn't exist yet (phone offline, etc.) just
             # continue — we will still read whatever state is available.
@@ -334,8 +335,10 @@ class PersonTracker:
                 self._cancel_location_watch = None
             self._cancel_location_timeout = None
             _LOGGER.warning(
-                "[%s] no location update received within %ds — reading cached state",
-                self.label, LOCATION_UPDATE_WAIT_S,
+                "[%s] request_location_update was sent to %s but %s did not push "
+                "a new state within %ds — reading cached device_tracker state",
+                self.label, self._location_notify_service,
+                self.device_entity, LOCATION_UPDATE_WAIT_S,
             )
             self.hass.async_create_task(self._read_location())
 
