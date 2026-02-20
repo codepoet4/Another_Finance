@@ -31,6 +31,8 @@ LOCATION_UPDATE_WAIT_S = 20   # seconds to wait after sending request_location_u
 # Arrival detection
 ARRIVAL_PROXIMITY_M = 20       # metres — trigger window around house
 ACCURACY_REQUIRED_M = 10       # metres — GPS accuracy must be this good
+NEAR_HOME_PROXIMITY_M = 200    # metres — switch to rapid polling when closer than this
+NEAR_HOME_POLL_INTERVAL_S = 2  # seconds — poll interval inside NEAR_HOME_PROXIMITY_M
 
 # Motion correlation window
 MOTION_BEFORE_S = 5            # seconds before proximity detection

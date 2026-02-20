@@ -32,6 +32,8 @@ from homeassistant.util.dt import utcnow
 from .const import (
     ACCURACY_REQUIRED_M,
     ARRIVAL_PROXIMITY_M,
+    NEAR_HOME_POLL_INTERVAL_S,
+    NEAR_HOME_PROXIMITY_M,
     CONF_AVG_SPEED_KPH,
     CONF_GARAGE_DOOR,
     CONF_HOME_ZONE,
@@ -226,18 +228,21 @@ class PersonTracker:
     # Poll scheduling
     # ------------------------------------------------------------------
 
-    def _schedule_poll(self, delay_s: float) -> None:
-        """Schedule _poll() after *delay_s* seconds (clamped to bounds)."""
+    def _schedule_poll(self, delay_s: float, *, min_s: float = MIN_POLL_INTERVAL_S) -> None:
+        """Schedule _poll() after *delay_s* seconds (clamped to bounds).
+
+        Pass ``min_s`` to override the lower bound (e.g. near-home rapid polling).
+        """
         if self._cancel_poll:
             self._cancel_poll()
             self._cancel_poll = None
 
         raw = delay_s
-        delay_s = max(MIN_POLL_INTERVAL_S, min(delay_s, MAX_POLL_INTERVAL_S))
+        delay_s = max(min_s, min(delay_s, MAX_POLL_INTERVAL_S))
         if delay_s != raw:
             _LOGGER.info(
-                "[%s] poll interval %.0f s clamped to %.0f s (bounds %d–%d s)",
-                self.label, raw, delay_s, MIN_POLL_INTERVAL_S, MAX_POLL_INTERVAL_S,
+                "[%s] poll interval %.0f s clamped to %.0f s (bounds %.0f–%d s)",
+                self.label, raw, delay_s, min_s, MAX_POLL_INTERVAL_S,
             )
         else:
             _LOGGER.info("[%s] next location request in %.0f s", self.label, delay_s)
@@ -412,6 +417,13 @@ class PersonTracker:
                 self.label,
             )
 
+        # Capture previous distance before overwriting position (used below for
+        # near-home direction check).
+        prev_distance_m: Optional[float] = (
+            _haversine_m(self._prev_lat, self._prev_lon, home_lat, home_lon)
+            if self._prev_lat is not None else None
+        )
+
         self._prev_lat = lat
         self._prev_lon = lon
         self._prev_poll_time = now
@@ -446,6 +458,20 @@ class PersonTracker:
                 "[%s] away (not yet driving) — %.1f m from home",
                 self.label, distance_m,
             )
+
+        # ── Near-home rapid poll ───────────────────────────────────────
+        # Within 200 m and still closing the gap → poll every 2 s so we
+        # don't miss the 20 m arrival window.
+        approaching = prev_distance_m is not None and distance_m < prev_distance_m
+        if distance_m <= NEAR_HOME_PROXIMITY_M and approaching:
+            _LOGGER.info(
+                "[%s] within %.0f m of home and approaching (prev %.1f m → now %.1f m) "
+                "— rapid poll in %ds",
+                self.label, NEAR_HOME_PROXIMITY_M,
+                prev_distance_m, distance_m, NEAR_HOME_POLL_INTERVAL_S,
+            )
+            self._schedule_poll(NEAR_HOME_POLL_INTERVAL_S, min_s=NEAR_HOME_POLL_INTERVAL_S)
+            return
 
         # ── Adaptive next-poll interval ────────────────────────────────
         # Interval = (estimated drive time home) × 4/5
