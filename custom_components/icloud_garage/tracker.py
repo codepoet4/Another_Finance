@@ -374,6 +374,18 @@ class PersonTracker:
             self._schedule_poll(MIN_POLL_INTERVAL_S, reason="entity not found, retry")
             return
 
+        # If HA's zone detection says we're home, stop polling regardless of
+        # self.state — handles the case where zone_entered was never fired after
+        # a GPS glitch (iCloud coarse zone detection can miss the re-entry event).
+        if entity_state.state.lower() == "home":
+            _LOGGER.info(
+                "[%s] _read_location: entity state is 'home' — stopping poll cycle "
+                "(zone_entered event may have been missed)",
+                self.label,
+            )
+            self.state = STATE_HOME
+            return
+
         attrs = entity_state.attributes
         lat: Optional[float] = attrs.get("latitude")
         lon: Optional[float] = attrs.get("longitude")
