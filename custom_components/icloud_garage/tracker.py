@@ -376,6 +376,19 @@ class PersonTracker:
             self._schedule_poll(MIN_POLL_INTERVAL_S, reason="entity not found, retry")
             return
 
+        # If HA already considers the device home but we're in STATE_AWAY (never
+        # confirmed driving), stop the poll cycle.  STATE_DRIVING is intentionally
+        # excluded: we still need to confirm the 20 m threshold before opening the
+        # garage even after the home zone is entered.
+        if entity_state.state.lower() == "home" and self.state == STATE_AWAY:
+            _LOGGER.warning(
+                "[%s] entity reports 'home' while tracker is STATE_AWAY "
+                "(no drive-in confirmed) — stopping spurious poll cycle",
+                self.label,
+            )
+            self.state = STATE_HOME
+            return
+
         attrs = entity_state.attributes
         lat: Optional[float] = attrs.get("latitude")
         lon: Optional[float] = attrs.get("longitude")
