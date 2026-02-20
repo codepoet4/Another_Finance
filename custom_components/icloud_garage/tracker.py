@@ -212,13 +212,26 @@ class PersonTracker:
         self._schedule_poll(MIN_POLL_INTERVAL_S, reason="zone left")
 
     def on_zone_entered(self) -> None:
-        """Person entered the home zone — suspend tracking."""
-        _LOGGER.info(
-            "[%s] ENTERED home zone — state %s→HOME, polling suspended",
+        """Person entered the home zone — suspend tracking unless driving."""
+        # The HA home zone is coarse (typically ~100 m radius).  If we're
+        # already in STATE_DRIVING or STATE_APPROACHING we must keep polling
+        # until the 20 m proximity threshold is confirmed — DO NOT stop here.
+        if self.state in (STATE_DRIVING, STATE_APPROACHING):
+            _LOGGER.warning(
+                "[%s] zone-entered event received while state=%s — "
+                "continuing to monitor for 20 m proximity trigger (NOT stopping)",
+                self.label, self.state,
+            )
+            return
+
+        _LOGGER.warning(
+            "[%s] ENTERED home zone — state %s→HOME  poll cancelled  "
+            "(zone event fired by HA)",
             self.label, self.state,
         )
         self.state = STATE_HOME
         if self._cancel_poll:
+            _LOGGER.warning("[%s] cancelling scheduled poll due to zone entry", self.label)
             self._cancel_poll()
             self._cancel_poll = None
         if self._cancel_motion_wait:
@@ -316,7 +329,7 @@ class PersonTracker:
         # Subscribe to the device_tracker entity so _read_location() fires the
         # moment the phone pushes a fresh position back to HA.
         @callback
-        def _on_location_update(_event) -> None:
+        def _on_location_update(event) -> None:
             """Called as soon as the device_tracker receives a new state."""
             # Unsubscribe (one-shot) and cancel the fallback timeout.
             unsub = self._cancel_location_watch
@@ -326,7 +339,12 @@ class PersonTracker:
             if self._cancel_location_timeout:
                 self._cancel_location_timeout()
                 self._cancel_location_timeout = None
-            _LOGGER.info("[%s] device_tracker updated — reading location immediately", self.label)
+            new_state = event.data.get("new_state")
+            zone_state = new_state.state if new_state else "unknown"
+            _LOGGER.info(
+                "[%s] device_tracker updated (entity_zone='%s') — reading location immediately",
+                self.label, zone_state,
+            )
             self.hass.async_create_task(self._read_location())
 
         self._cancel_location_watch = async_track_state_change_event(
@@ -361,7 +379,11 @@ class PersonTracker:
         driving state machine, check proximity, and schedule the next poll.
         """
         if self.state == STATE_HOME:
-            _LOGGER.info("[%s] _read_location() skipped — state is HOME", self.label)
+            _LOGGER.warning(
+                "[%s] _read_location() called while already HOME — "
+                "stale callback (zone entry or guard already stopped the cycle)",
+                self.label,
+            )
             return
         if self._waiting_for_motion:
             _LOGGER.info("[%s] _read_location() skipped — waiting for motion correlation", self.label)
@@ -409,9 +431,9 @@ class PersonTracker:
         now = utcnow()
 
         _LOGGER.info(
-            "[%s] location read — state=%s  dist=%.1f m  accuracy=%.1f m  "
-            "pos=(%.6f, %.6f)",
-            self.label, self.state, distance_m, accuracy, lat, lon,
+            "[%s] location read — state=%s  entity_zone='%s'  dist=%.1f m  "
+            "accuracy=%.1f m  pos=(%.6f, %.6f)",
+            self.label, self.state, entity_state.state, distance_m, accuracy, lat, lon,
         )
 
         # ── Driving detection ──────────────────────────────────────────
@@ -597,7 +619,7 @@ class PersonTracker:
 
     def _reset_approach(self) -> None:
         """Return to HOME state after an arrival attempt (success or miss)."""
-        _LOGGER.info("[%s] resetting to STATE_HOME — tracking suspended", self.label)
+        _LOGGER.warning("[%s] resetting to STATE_HOME — tracking suspended", self.label)
         self.state = STATE_HOME
         self._waiting_for_motion = False
         self._proximity_time = None
