@@ -825,6 +825,11 @@ class GarageCoordinator:
         old_zone = old_state.state.lower()
         new_zone = new_state.state.lower()
 
+        # Attribute-only updates (GPS refresh, battery, etc.) fire state_changed
+        # with the same zone value — ignore them silently.
+        if old_zone == new_zone:
+            return
+
         _LOGGER.warning(
             "[%s] zone change: '%s' → '%s'",
             self._device_label, old_zone, new_zone,
