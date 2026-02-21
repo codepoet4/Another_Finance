@@ -221,12 +221,21 @@ class PersonTracker:
         # The HA home zone is coarse (typically ~100 m radius).  If we're
         # already in STATE_DRIVING or STATE_APPROACHING we must keep polling
         # until the proximity threshold is confirmed — DO NOT stop here.
+        # Cancel any pending watch/timeout and read location immediately so
+        # the proximity check runs against the fresh zone-entry coordinates.
         if self.state in (STATE_DRIVING, STATE_APPROACHING):
             _LOGGER.warning(
                 "[%s] zone-entered event received while state=%s — "
-                "continuing to monitor for proximity trigger (NOT stopping)",
+                "cancelling pending wait and reading location immediately",
                 self.label, self.state,
             )
+            if self._cancel_location_watch:
+                self._cancel_location_watch()
+                self._cancel_location_watch = None
+            if self._cancel_location_timeout:
+                self._cancel_location_timeout()
+                self._cancel_location_timeout = None
+            self.hass.async_create_task(self._read_location())
             return
 
         _LOGGER.warning(
