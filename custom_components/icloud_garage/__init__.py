@@ -14,7 +14,7 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up iCloud Garage Automation from a config entry."""
-    coordinator = GarageCoordinator(hass, dict(entry.data))
+    coordinator = GarageCoordinator(hass, {**entry.data, **entry.options})
 
     if not await coordinator.async_setup():
         return False

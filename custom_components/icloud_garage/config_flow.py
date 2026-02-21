@@ -158,7 +158,9 @@ class ICloudGarageOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        current = self._entry.data
+        # Merge data (initial setup) with options (saved changes) so the form
+        # always reflects the most recently saved values, not the original setup.
+        current = {**self._entry.data, **self._entry.options}
 
         schema = vol.Schema(
             {
