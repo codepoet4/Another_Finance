@@ -46,11 +46,13 @@ class ICloudGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors[field] = "required"
 
             if not errors:
-                await self.async_set_unique_id(DOMAIN)
+                device = user_input[CONF_DEVICE_TRACKER]
+                label = user_input.get(CONF_DEVICE_LABEL, device)
+                await self.async_set_unique_id(device)
                 self._abort_if_unique_id_configured()
 
                 return self.async_create_entry(
-                    title="iCloud Garage Automation",
+                    title=f"iCloud Garage — {label}",
                     data=user_input,
                 )
 
