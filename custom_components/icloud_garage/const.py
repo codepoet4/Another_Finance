@@ -3,18 +3,14 @@
 DOMAIN = "icloud_garage"
 
 # Config entry keys
-CONF_MY_DEVICE = "my_device_tracker"
-CONF_WIFE_DEVICE = "wife_device_tracker"
+CONF_DEVICE_TRACKER = "device_tracker"      # e.g. device_tracker.rpip
+CONF_DEVICE_LABEL = "device_label"          # "me", "wife", or any name
+CONF_NOTIFY_SERVICE = "notify_service"      # optional override, e.g. notify.mobile_app_rpip
 CONF_GARAGE_DOOR = "garage_door_entity"
 CONF_MOTION_SENSOR = "motion_sensor_entity"
 CONF_NOTIFICATION_TARGET = "notification_target"
 CONF_AVG_SPEED_KPH = "avg_speed_kph"
 CONF_HOME_ZONE = "home_zone"
-# Optional overrides for per-phone location-request notify services.
-# If omitted the service is derived from the device_tracker entity name:
-#   device_tracker.rpip  →  notify.mobile_app_rpip
-CONF_MY_NOTIFY = "my_notify_service"
-CONF_WIFE_NOTIFY = "wife_notify_service"
 
 # Defaults
 DEFAULT_AVG_SPEED_KPH = 40.0  # kph assumed average driving speed
@@ -25,14 +21,16 @@ MIN_POLL_INTERVAL_S = 30       # seconds — never poll faster than this
 MAX_POLL_INTERVAL_S = 1800     # seconds — never wait more than 30 min
 
 # Location update request
-LOCATION_UPDATE_WAIT_S = 20   # seconds to wait after sending request_location_update
-                               # before reading the (hopefully refreshed) device_tracker
+LOCATION_UPDATE_WAIT_S = 20   # seconds — fallback timeout after request_location_update
+                               # (non-blocking: async_call_later returns immediately;
+                               #  _read_location fires sooner if the phone responds first)
 
 # Arrival detection
 ARRIVAL_PROXIMITY_M = 20       # metres — trigger window around house
 ACCURACY_REQUIRED_M = 10       # metres — GPS accuracy must be this good
 NEAR_HOME_PROXIMITY_M = 200    # metres — switch to rapid polling when closer than this
 NEAR_HOME_POLL_INTERVAL_S = 2  # seconds — poll interval inside NEAR_HOME_PROXIMITY_M
+MOTION_START_COMBINED_M = 100  # metres — start motion watch when dist + accuracy drops below this
 
 # Motion correlation window
 MOTION_BEFORE_S = 5            # seconds before proximity detection

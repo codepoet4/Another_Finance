@@ -4,14 +4,13 @@ Core tracking logic for iCloud Garage Automation.
 Architecture
 -----------
 GarageCoordinator
-  ├── PersonTracker("me",   device_tracker.rpip)
-  └── PersonTracker("wife", device_tracker.shyiphonexs)
+  └── PersonTracker("<label>", <device_tracker>)
 
 Each PersonTracker runs an independent, dynamically-timed poll loop:
-  • When at home        → standby; resume on zone-leave event
-  • When away/driving   → poll every 4/5 of estimated drive-home time
-  • When within 20 m    → require GPS accuracy ≤ 10 m, then check motion
-  • Motion correlation  → within 5 s before OR 10 s after proximity hit
+  • When at home or in a named zone  → standby; resume on zone-leave event
+  • When away/driving                → poll every 4/5 of estimated drive-home time
+  • When dist + accuracy ≤ 100 m    → start motion watch window
+  • When within 20 m + accuracy ≤ 10 m → trigger garage if motion detected
   → call GarageCoordinator.open_garage() which enforces all safety guards
 """
 from __future__ import annotations
@@ -27,22 +26,19 @@ from homeassistant.helpers.event import (
     async_call_later,
     async_track_state_change_event,
 )
-from homeassistant.util.dt import utcnow
+from homeassistant.util.dt import as_local, utcnow
 
 from .const import (
     ACCURACY_REQUIRED_M,
     ARRIVAL_PROXIMITY_M,
-    NEAR_HOME_POLL_INTERVAL_S,
-    NEAR_HOME_PROXIMITY_M,
     CONF_AVG_SPEED_KPH,
+    CONF_DEVICE_LABEL,
+    CONF_DEVICE_TRACKER,
     CONF_GARAGE_DOOR,
     CONF_HOME_ZONE,
     CONF_MOTION_SENSOR,
-    CONF_MY_DEVICE,
-    CONF_MY_NOTIFY,
     CONF_NOTIFICATION_TARGET,
-    CONF_WIFE_DEVICE,
-    CONF_WIFE_NOTIFY,
+    CONF_NOTIFY_SERVICE,
     DEFAULT_AVG_SPEED_KPH,
     DEFAULT_HOME_ZONE,
     DRIVING_SPEED_THRESHOLD_KPH,
@@ -52,6 +48,9 @@ from .const import (
     MIN_POLL_INTERVAL_S,
     MOTION_AFTER_S,
     MOTION_BEFORE_S,
+    MOTION_START_COMBINED_M,
+    NEAR_HOME_POLL_INTERVAL_S,
+    NEAR_HOME_PROXIMITY_M,
     STATE_APPROACHING,
     STATE_AWAY,
     STATE_DRIVING,
@@ -140,6 +139,10 @@ class PersonTracker:
         self._proximity_time: Optional[datetime] = None
         self._waiting_for_motion: bool = False
         self._cancel_motion_wait: Optional[Callable] = None
+
+        # Timestamp when dist+accuracy first crossed MOTION_START_COMBINED_M;
+        # used as the start of the motion correlation window.
+        self._motion_watch_start: Optional[datetime] = None
 
         # Location-update watch: one-shot subscription + fallback timeout
         self._cancel_location_watch: Optional[Callable] = None
@@ -261,13 +264,18 @@ class PersonTracker:
 
         raw = delay_s
         delay_s = max(min_s, min(delay_s, MAX_POLL_INTERVAL_S))
+        fire_at = as_local(utcnow() + timedelta(seconds=delay_s))
         if delay_s != raw:
-            _LOGGER.info(
-                "[%s] poll interval %.0f s clamped to %.0f s (bounds %.0f–%d s)",
+            _LOGGER.warning(
+                "[%s] poll interval %.0f s clamped to %.0f s (bounds %.0f–%d s) — next request at %s",
                 self.label, raw, delay_s, min_s, MAX_POLL_INTERVAL_S,
+                fire_at.strftime("%H:%M:%S"),
             )
         else:
-            _LOGGER.info("[%s] next location request in %.0f s", self.label, delay_s)
+            _LOGGER.warning(
+                "[%s] next location request in %.0f s (at %s local)",
+                self.label, delay_s, fire_at.strftime("%H:%M:%S"),
+            )
 
         @callback
         def _fire(_now):
@@ -292,6 +300,21 @@ class PersonTracker:
         if self._waiting_for_motion:
             _LOGGER.info("[%s] _poll() skipped — waiting for motion correlation", self.label)
             return
+
+        # If the device is parked in a named non-home zone (e.g. "work", "gym"),
+        # don't waste location requests — just wait for the zone-exit event from HA.
+        # Only applies when STATE_AWAY (no driving confirmed); STATE_DRIVING falls through.
+        if self.state == STATE_AWAY:
+            entity_state = self.hass.states.get(self.device_entity)
+            if entity_state:
+                zone = entity_state.state.lower()
+                if zone not in ("home", "not_home"):
+                    _LOGGER.warning(
+                        "[%s] device is in zone '%s' — skipping location request; "
+                        "will resume on zone exit",
+                        self.label, entity_state.state,
+                    )
+                    return  # zone-exit event → on_zone_left() restarts polling
 
         notify_svc = self._location_notify_service.replace("notify.", "", 1)
         _LOGGER.warning(
@@ -475,6 +498,20 @@ class PersonTracker:
         self._prev_lon = lon
         self._prev_poll_time = now
 
+        # ── Early motion watch (100 m combined) ────────────────────────
+        # Begin recording the motion window as soon as dist + accuracy
+        # is below MOTION_START_COMBINED_M.  This extends the effective
+        # look-back window when we later hit the 20 m hard trigger.
+        if self.state == STATE_DRIVING and self._motion_watch_start is None:
+            combined_m = distance_m + accuracy
+            if combined_m <= MOTION_START_COMBINED_M:
+                self._motion_watch_start = now
+                _LOGGER.warning(
+                    "[%s] CLOSE APPROACH — dist %.1f m + accuracy %.1f m = %.1f m "
+                    "(≤%d m combined) — motion watch window started",
+                    self.label, distance_m, accuracy, combined_m, MOTION_START_COMBINED_M,
+                )
+
         # ── Proximity check ────────────────────────────────────────────
         if self.state == STATE_DRIVING:
             if distance_m <= ARRIVAL_PROXIMITY_M:
@@ -553,20 +590,26 @@ class PersonTracker:
         self._proximity_time = t0
         self._waiting_for_motion = True
 
-        t_before_start = t0 - timedelta(seconds=MOTION_BEFORE_S)
+        # Use the motion watch start (set when dist+accuracy first crossed
+        # MOTION_START_COMBINED_M) as the window start, so we look back as far
+        # as possible.  Fall back to the fixed MOTION_BEFORE_S window if the
+        # close-approach threshold was never triggered (e.g. very fast GPS fix).
+        t_before_start = self._motion_watch_start or (t0 - timedelta(seconds=MOTION_BEFORE_S))
         motion_buf_size = len(self.coordinator._motion_events)
 
-        _LOGGER.info(
+        _LOGGER.warning(
             "[%s] PROXIMITY CONFIRMED — checking motion buffer "
-            "(window [t−%ds, t0], %d events in buffer)",
-            self.label, MOTION_BEFORE_S, motion_buf_size,
+            "(window [%s, t0], %d events in buffer)",
+            self.label,
+            t_before_start.strftime("%H:%M:%S"),
+            motion_buf_size,
         )
 
-        # Immediate check: was there motion in the last MOTION_BEFORE_S seconds?
+        # Immediate check: was there motion since the watch window opened?
         if self.coordinator.has_motion_in_window(t_before_start, t0):
-            _LOGGER.info(
-                "[%s] motion found in pre-arrival window [t−%ds, t0] — triggering garage",
-                self.label, MOTION_BEFORE_S,
+            _LOGGER.warning(
+                "[%s] motion found in pre-arrival window — triggering garage",
+                self.label,
             )
             await self._finish_arrival()
             return
@@ -588,27 +631,32 @@ class PersonTracker:
 
     async def _evaluate_motion_after_wait(self, t0: datetime) -> None:
         """Called MOTION_AFTER_S seconds after proximity was confirmed."""
-        t_start = t0 - timedelta(seconds=MOTION_BEFORE_S)
+        t_start = self._motion_watch_start or (t0 - timedelta(seconds=MOTION_BEFORE_S))
         t_end = t0 + timedelta(seconds=MOTION_AFTER_S)
         motion_buf_size = len(self.coordinator._motion_events)
 
-        _LOGGER.info(
-            "[%s] post-arrival motion check — window [t−%ds, t+%ds], "
+        _LOGGER.warning(
+            "[%s] post-arrival motion check — window [%s, %s], "
             "%d events in buffer",
-            self.label, MOTION_BEFORE_S, MOTION_AFTER_S, motion_buf_size,
+            self.label,
+            t_start.strftime("%H:%M:%S"),
+            t_end.strftime("%H:%M:%S"),
+            motion_buf_size,
         )
 
         if self.coordinator.has_motion_in_window(t_start, t_end):
-            _LOGGER.info(
-                "[%s] motion found in full window [t−%ds, t+%ds] — triggering garage",
-                self.label, MOTION_BEFORE_S, MOTION_AFTER_S,
+            _LOGGER.warning(
+                "[%s] motion found in full window — triggering garage",
+                self.label,
             )
             await self._finish_arrival()
         else:
-            _LOGGER.info(
-                "[%s] NO motion found in full window [t−%ds, t+%ds] — "
+            _LOGGER.warning(
+                "[%s] NO motion found in full window [%s, %s] — "
                 "garage will NOT be opened",
-                self.label, MOTION_BEFORE_S, MOTION_AFTER_S,
+                self.label,
+                t_start.strftime("%H:%M:%S"),
+                t_end.strftime("%H:%M:%S"),
             )
             self._reset_approach()
 
@@ -623,6 +671,7 @@ class PersonTracker:
         self.state = STATE_HOME
         self._waiting_for_motion = False
         self._proximity_time = None
+        self._motion_watch_start = None
         if self._cancel_motion_wait:
             self._cancel_motion_wait()
             self._cancel_motion_wait = None
@@ -647,12 +696,13 @@ class GarageCoordinator:
         self.home_lon: float = 0.0
         self.avg_speed_kph: float = float(config.get(CONF_AVG_SPEED_KPH, DEFAULT_AVG_SPEED_KPH))
 
-        # Entity IDs
+        # Entity IDs / config
         self._garage_entity: str = config[CONF_GARAGE_DOOR]
         self._motion_entity: str = config[CONF_MOTION_SENSOR]
         self._notification_target: str = config[CONF_NOTIFICATION_TARGET]
-        self._my_device: str = config[CONF_MY_DEVICE]
-        self._wife_device: str = config[CONF_WIFE_DEVICE]
+        self._device_tracker: str = config[CONF_DEVICE_TRACKER]
+        self._device_label: str = config.get(CONF_DEVICE_LABEL, "me")
+        self._notify_service: Optional[str] = config.get(CONF_NOTIFY_SERVICE)
         self._home_zone: str = config.get(CONF_HOME_ZONE, DEFAULT_HOME_ZONE)
 
         # Garage cooldown — track last close time
@@ -690,21 +740,16 @@ class GarageCoordinator:
             self._garage_entity, self._motion_entity, self.avg_speed_kph,
         )
         _LOGGER.info(
-            "iCloud Garage — my device: %s  wife device: %s  "
-            "alert notify: %s",
-            self._my_device, self._wife_device, self._notification_target,
+            "iCloud Garage — label: %s  device: %s  alert notify: %s",
+            self._device_label, self._device_tracker, self._notification_target,
         )
 
-        # Instantiate per-person trackers.
-        # notify_service is used to send request_location_update; falls back to
-        # auto-derived notify.mobile_app_<device_name> if not explicitly set.
-        self._trackers["me"] = PersonTracker(
-            self.hass, "me", self._my_device, self,
-            notify_service=self._config.get(CONF_MY_NOTIFY),
-        )
-        self._trackers["wife"] = PersonTracker(
-            self.hass, "wife", self._wife_device, self,
-            notify_service=self._config.get(CONF_WIFE_NOTIFY),
+        # Instantiate single tracker.
+        # notify_service sends request_location_update; auto-derived from
+        # device_tracker name if not explicitly set.
+        self._trackers[self._device_label] = PersonTracker(
+            self.hass, self._device_label, self._device_tracker, self,
+            notify_service=self._notify_service,
         )
 
         # ── HA event subscriptions ──────────────────────────────────────
@@ -713,7 +758,7 @@ class GarageCoordinator:
         self._unsub.append(
             async_track_state_change_event(
                 self.hass,
-                [self._my_device, self._wife_device],
+                [self._device_tracker],
                 self._handle_device_state_change,
             )
         )
@@ -763,8 +808,7 @@ class GarageCoordinator:
 
     @callback
     def _handle_device_state_change(self, event) -> None:
-        """Detect home-zone enter / leave for either tracked device."""
-        entity_id: str = event.data["entity_id"]
+        """Detect home-zone enter / leave for the tracked device."""
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
 
@@ -773,14 +817,13 @@ class GarageCoordinator:
 
         old_zone = old_state.state.lower()
         new_zone = new_state.state.lower()
-        tracker_key = "me" if entity_id == self._my_device else "wife"
 
-        _LOGGER.info(
-            "device_tracker event — %s (%s): '%s' → '%s'",
-            entity_id, tracker_key, old_zone, new_zone,
+        _LOGGER.warning(
+            "[%s] zone change: '%s' → '%s'",
+            self._device_label, old_zone, new_zone,
         )
 
-        tracker = self._trackers.get(tracker_key)
+        tracker = next(iter(self._trackers.values()), None)
         if not tracker:
             return
 
@@ -789,8 +832,9 @@ class GarageCoordinator:
         elif new_zone == "home" and old_zone != "home":
             tracker.on_zone_entered()
         else:
-            _LOGGER.info(
-                "device_tracker event — no zone boundary crossed, no action taken",
+            _LOGGER.warning(
+                "[%s] zone change is not a home boundary — no action taken",
+                self._device_label,
             )
 
     @callback
@@ -860,9 +904,9 @@ class GarageCoordinator:
         if self._cooldown_active():
             elapsed = (utcnow() - self._garage_last_closed).total_seconds()
             remaining = GARAGE_COOLDOWN_S - elapsed
-            _LOGGER.info(
+            _LOGGER.warning(
                 "GARAGE NOT OPENED — cooldown active (closed %.0f s ago, "
-                "%.0f s remaining before auto-open is allowed) — triggered by: %s",
+                "%.0f s remaining) — triggered by: %s",
                 elapsed, remaining, triggered_by,
             )
             return
@@ -870,14 +914,14 @@ class GarageCoordinator:
         # Guard 2: already open
         garage_state = self.hass.states.get(self._garage_entity)
         if garage_state and garage_state.state in _GARAGE_OPEN_STATES:
-            _LOGGER.info(
+            _LOGGER.warning(
                 "GARAGE NOT OPENED — already '%s' — triggered by: %s",
                 garage_state.state, triggered_by,
             )
             return
 
         # Open the door
-        _LOGGER.info("OPENING GARAGE DOOR — triggered by: %s", triggered_by)
+        _LOGGER.warning("OPENING GARAGE DOOR — triggered by: %s", triggered_by)
         await self.hass.services.async_call(
             "cover",
             "open_cover",
@@ -886,7 +930,7 @@ class GarageCoordinator:
         )
 
         # Notify owner's iPhone
-        who = "your wife" if triggered_by == "wife" else "you"
+        who = {"wife": "your wife", "me": "you"}.get(triggered_by, triggered_by)
         message = (
             f"Garage door opened: {who} arrived home "
             f"(triggered by iCloud Garage Automation)."
