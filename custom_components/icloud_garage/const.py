@@ -11,10 +11,14 @@ CONF_MOTION_SENSOR = "motion_sensor_entity"
 CONF_NOTIFICATION_TARGET = "notification_target"
 CONF_AVG_SPEED_KPH = "avg_speed_kph"
 CONF_HOME_ZONE = "home_zone"
+CONF_ARRIVAL_PROXIMITY_M = "arrival_proximity_m"
+CONF_ACCURACY_REQUIRED_M = "accuracy_required_m"
 
 # Defaults
 DEFAULT_AVG_SPEED_KPH = 40.0  # kph assumed average driving speed
 DEFAULT_HOME_ZONE = "zone.home"
+DEFAULT_ARRIVAL_PROXIMITY_M = 30   # metres — trigger window around house
+DEFAULT_ACCURACY_REQUIRED_M = 20   # metres — GPS accuracy must be this good
 
 # Polling bounds
 MIN_POLL_INTERVAL_S = 30       # seconds — never poll faster than this
@@ -26,8 +30,6 @@ LOCATION_UPDATE_WAIT_S = 20   # seconds — fallback timeout after request_locat
                                #  _read_location fires sooner if the phone responds first)
 
 # Arrival detection
-ARRIVAL_PROXIMITY_M = 20       # metres — trigger window around house
-ACCURACY_REQUIRED_M = 10       # metres — GPS accuracy must be this good
 NEAR_HOME_PROXIMITY_M = 200    # metres — switch to rapid polling when closer than this
 NEAR_HOME_POLL_INTERVAL_S = 2  # seconds — poll interval inside NEAR_HOME_PROXIMITY_M
 MOTION_START_COMBINED_M = 100  # metres — start motion watch when dist + accuracy drops below this

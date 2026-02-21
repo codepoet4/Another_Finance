@@ -10,7 +10,7 @@ Each PersonTracker runs an independent, dynamically-timed poll loop:
   • When at home or in a named zone  → standby; resume on zone-leave event
   • When away/driving                → poll every 4/5 of estimated drive-home time
   • When dist + accuracy ≤ 100 m    → start motion watch window
-  • When within 20 m + accuracy ≤ 10 m → trigger garage if motion detected
+  • When within arrival_proximity_m + accuracy ≤ accuracy_required_m → trigger garage if motion detected
   → call GarageCoordinator.open_garage() which enforces all safety guards
 """
 from __future__ import annotations
@@ -29,8 +29,8 @@ from homeassistant.helpers.event import (
 from homeassistant.util.dt import as_local, utcnow
 
 from .const import (
-    ACCURACY_REQUIRED_M,
-    ARRIVAL_PROXIMITY_M,
+    CONF_ACCURACY_REQUIRED_M,
+    CONF_ARRIVAL_PROXIMITY_M,
     CONF_AVG_SPEED_KPH,
     CONF_DEVICE_LABEL,
     CONF_DEVICE_TRACKER,
@@ -39,6 +39,8 @@ from .const import (
     CONF_MOTION_SENSOR,
     CONF_NOTIFICATION_TARGET,
     CONF_NOTIFY_SERVICE,
+    DEFAULT_ACCURACY_REQUIRED_M,
+    DEFAULT_ARRIVAL_PROXIMITY_M,
     DEFAULT_AVG_SPEED_KPH,
     DEFAULT_HOME_ZONE,
     DRIVING_SPEED_THRESHOLD_KPH,
@@ -103,7 +105,7 @@ class PersonTracker:
     STATE_HOME       → person is inside the home zone; polling paused
     STATE_AWAY       → left home zone; polling started; driving not yet confirmed
     STATE_DRIVING    → speed between polls exceeded threshold; now tracking approach
-    STATE_APPROACHING→ within 20 m, waiting for motion correlation
+    STATE_APPROACHING→ within arrival_proximity_m, waiting for motion correlation
     """
 
     def __init__(
@@ -218,11 +220,11 @@ class PersonTracker:
         """Person entered the home zone — suspend tracking unless driving."""
         # The HA home zone is coarse (typically ~100 m radius).  If we're
         # already in STATE_DRIVING or STATE_APPROACHING we must keep polling
-        # until the 20 m proximity threshold is confirmed — DO NOT stop here.
+        # until the proximity threshold is confirmed — DO NOT stop here.
         if self.state in (STATE_DRIVING, STATE_APPROACHING):
             _LOGGER.warning(
                 "[%s] zone-entered event received while state=%s — "
-                "continuing to monitor for 20 m proximity trigger (NOT stopping)",
+                "continuing to monitor for proximity trigger (NOT stopping)",
                 self.label, self.state,
             )
             return
@@ -423,8 +425,8 @@ class PersonTracker:
 
         # If HA already considers the device home but we're in STATE_AWAY (never
         # confirmed driving), stop the poll cycle.  STATE_DRIVING is intentionally
-        # excluded: we still need to confirm the 20 m threshold before opening the
-        # garage even after the home zone is entered.
+        # excluded: we still need to confirm the proximity threshold before opening
+        # the garage even after the home zone is entered.
         if entity_state.state.lower() == "home" and self.state == STATE_AWAY:
             _LOGGER.warning(
                 "[%s] entity reports 'home' while tracker is STATE_AWAY "
@@ -501,7 +503,7 @@ class PersonTracker:
         # ── Early motion watch (100 m combined) ────────────────────────
         # Begin recording the motion window as soon as dist + accuracy
         # is below MOTION_START_COMBINED_M.  This extends the effective
-        # look-back window when we later hit the 20 m hard trigger.
+        # look-back window when we later hit the proximity hard trigger.
         if self.state == STATE_DRIVING and self._motion_watch_start is None:
             combined_m = distance_m + accuracy
             if combined_m <= MOTION_START_COMBINED_M:
@@ -512,10 +514,13 @@ class PersonTracker:
                     self.label, distance_m, accuracy, combined_m, MOTION_START_COMBINED_M,
                 )
 
+        arrival_m = self.coordinator.arrival_proximity_m
+        accuracy_m = self.coordinator.accuracy_required_m
+
         # ── Proximity check ────────────────────────────────────────────
         if self.state == STATE_DRIVING:
-            if distance_m <= ARRIVAL_PROXIMITY_M:
-                if accuracy <= ACCURACY_REQUIRED_M:
+            if distance_m <= arrival_m:
+                if accuracy <= accuracy_m:
                     _LOGGER.warning(
                         "[%s] PROXIMITY HIT — %.1f m from home, accuracy %.1f m — "
                         "entering motion correlation",
@@ -526,16 +531,16 @@ class PersonTracker:
                 else:
                     _LOGGER.warning(
                         "[%s] within %.1f m of home but GPS accuracy %.1f m "
-                        "exceeds limit (need ≤%d m) — requesting better fix in %ds",
+                        "exceeds limit (need ≤%.0f m) — requesting better fix in %ds",
                         self.label, distance_m, accuracy,
-                        ACCURACY_REQUIRED_M, MIN_POLL_INTERVAL_S,
+                        accuracy_m, MIN_POLL_INTERVAL_S,
                     )
                     self._schedule_poll(MIN_POLL_INTERVAL_S, reason="poor GPS accuracy, retry")
                     return
             else:
                 _LOGGER.warning(
-                    "[%s] driving — %.1f m from home (trigger at %d m)",
-                    self.label, distance_m, ARRIVAL_PROXIMITY_M,
+                    "[%s] driving — %.1f m from home (trigger at %.0f m)",
+                    self.label, distance_m, arrival_m,
                 )
         elif self.state == STATE_AWAY:
             _LOGGER.warning(
@@ -545,7 +550,7 @@ class PersonTracker:
 
         # ── Near-home rapid poll ───────────────────────────────────────
         # Within 200 m and still closing the gap → poll every 2 s so we
-        # don't miss the 20 m arrival window.
+        # don't miss the arrival proximity window.
         approaching = prev_distance_m is not None and distance_m < prev_distance_m
         if distance_m <= NEAR_HOME_PROXIMITY_M and approaching:
             _LOGGER.info(
@@ -560,7 +565,7 @@ class PersonTracker:
         # ── Adaptive next-poll interval ────────────────────────────────
         # Interval = (estimated drive time home) × 4/5
         avg_kph = self.coordinator.avg_speed_kph
-        if avg_kph > 0 and distance_m > ARRIVAL_PROXIMITY_M:
+        if avg_kph > 0 and distance_m > self.coordinator.arrival_proximity_m:
             drive_time_s = (distance_m / 1000.0 / avg_kph) * 3600.0
             interval_s = drive_time_s * 0.8   # 4/5
             _LOGGER.info(
@@ -582,9 +587,9 @@ class PersonTracker:
 
     async def _on_proximity_confirmed(self, t0: datetime) -> None:
         """
-        Person is within 20 m with GPS accuracy ≤ 10 m.
-        Check for motion in the [t0 − 5 s, t0] window; if absent, wait 10 s
-        and re-check the full [t0 − 5 s, t0 + 10 s] window.
+        Person is within arrival_proximity_m with GPS accuracy ≤ accuracy_required_m.
+        Check for motion since _motion_watch_start (or t0 − MOTION_BEFORE_S); if absent,
+        wait MOTION_AFTER_S and re-check the full window.
         """
         self.state = STATE_APPROACHING
         self._proximity_time = t0
@@ -695,6 +700,8 @@ class GarageCoordinator:
         self.home_lat: float = 0.0
         self.home_lon: float = 0.0
         self.avg_speed_kph: float = float(config.get(CONF_AVG_SPEED_KPH, DEFAULT_AVG_SPEED_KPH))
+        self.arrival_proximity_m: float = float(config.get(CONF_ARRIVAL_PROXIMITY_M, DEFAULT_ARRIVAL_PROXIMITY_M))
+        self.accuracy_required_m: float = float(config.get(CONF_ACCURACY_REQUIRED_M, DEFAULT_ACCURACY_REQUIRED_M))
 
         # Entity IDs / config
         self._garage_entity: str = config[CONF_GARAGE_DOOR]

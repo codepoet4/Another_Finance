@@ -7,6 +7,8 @@ from homeassistant import config_entries
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_ACCURACY_REQUIRED_M,
+    CONF_ARRIVAL_PROXIMITY_M,
     CONF_AVG_SPEED_KPH,
     CONF_DEVICE_LABEL,
     CONF_DEVICE_TRACKER,
@@ -15,6 +17,8 @@ from .const import (
     CONF_MOTION_SENSOR,
     CONF_NOTIFICATION_TARGET,
     CONF_NOTIFY_SERVICE,
+    DEFAULT_ACCURACY_REQUIRED_M,
+    DEFAULT_ARRIVAL_PROXIMITY_M,
     DEFAULT_AVG_SPEED_KPH,
     DEFAULT_HOME_ZONE,
     DOMAIN,
@@ -85,6 +89,30 @@ class ICloudGarageConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     description={"suggested_value": DEFAULT_HOME_ZONE},
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="zone")
+                ),
+                vol.Optional(
+                    CONF_ARRIVAL_PROXIMITY_M,
+                    default=DEFAULT_ARRIVAL_PROXIMITY_M,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10,
+                        max=100,
+                        step=5,
+                        unit_of_measurement="m",
+                        mode=selector.NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CONF_ACCURACY_REQUIRED_M,
+                    default=DEFAULT_ACCURACY_REQUIRED_M,
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=5,
+                        max=50,
+                        step=5,
+                        unit_of_measurement="m",
+                        mode=selector.NumberSelectorMode.SLIDER,
+                    )
                 ),
                 vol.Optional(
                     CONF_AVG_SPEED_KPH,
@@ -175,6 +203,30 @@ class ICloudGarageOptionsFlow(config_entries.OptionsFlow):
                     default=current.get(CONF_HOME_ZONE, DEFAULT_HOME_ZONE),
                 ): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="zone")
+                ),
+                vol.Optional(
+                    CONF_ARRIVAL_PROXIMITY_M,
+                    default=current.get(CONF_ARRIVAL_PROXIMITY_M, DEFAULT_ARRIVAL_PROXIMITY_M),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10,
+                        max=100,
+                        step=5,
+                        unit_of_measurement="m",
+                        mode=selector.NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CONF_ACCURACY_REQUIRED_M,
+                    default=current.get(CONF_ACCURACY_REQUIRED_M, DEFAULT_ACCURACY_REQUIRED_M),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=5,
+                        max=50,
+                        step=5,
+                        unit_of_measurement="m",
+                        mode=selector.NumberSelectorMode.SLIDER,
+                    )
                 ),
                 vol.Optional(
                     CONF_AVG_SPEED_KPH,
